@@ -1,0 +1,17 @@
+# Generated pipeline outputs — don't commit these
+Chartink_Screener_*.xlsx
+Tomorrow_Setups_NSE/
+nse_setups_analyzed_results_*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env / secrets — never commit real keys
+.env
+
+# OS/editor cruft
+.DS_Store
+.vscode/
