@@ -20,7 +20,7 @@ API_KEYS = [k for k in API_KEYS if k]
 if not API_KEYS:
     raise ValueError("❌ No Gemini API keys found in environment variables!")
 
-MODEL_NAME = "gemini-3.5-flash-lite"
+MODEL_NAME = "gemini-3.7-flash"
 THINKING_LEVEL = "low"
 
 # Bound every single API call so a hung/slow request can never stall a worker
