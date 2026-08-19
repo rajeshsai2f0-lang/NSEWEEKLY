@@ -34,9 +34,10 @@ from openpyxl.utils import get_column_letter
 # ══════════════════════════════════════════════════════════════════════════════
 SCREENERS = [
     # Built to feed the weekly 10/30-EMA vision pipeline (fetchimages_nse.py /
-    # vision_engine.py). "Ready Now" mirrors the vision prompt's Readiness =
-    # Ready Now bucket: price above a rising 10-week EMA which itself sits
-    # above a rising 30-week EMA, tagging a fresh ~10-week high, on volume
+    # vision_engine.py). "Ready Now" mirrors the vision prompt's
+    # BreakoutStatus = "Breaking Out This Week" / "Pre-Breakout (Basing)"
+    # buckets: price above a rising 10-week EMA which itself sits above a
+    # rising 30-week EMA, tagging a fresh ~10-week high, on volume
     # expansion, and not yet extended too far to chase. "Basing" is a looser
     # pre-trigger watchlist feed for stocks approaching but not yet through
     # that same ceiling - useful for catching setups a few days before they

@@ -8,13 +8,7 @@ from google import genai
 from google.genai import types
 from PIL import Image
 
-API_KEYS = [
-    os.getenv("GEMINI_API_KEY_1"),
-    os.getenv("GEMINI_API_KEY_2"),
-    os.getenv("GEMINI_API_KEY_3"),
-    os.getenv("GEMINI_API_KEY_4"),
-    os.getenv("GEMINI_API_KEY_5"),
-]
+API_KEYS = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 21)]
 API_KEYS = [k for k in API_KEYS if k]
 
 if not API_KEYS:
@@ -37,198 +31,188 @@ PER_KEY_MIN_INTERVAL = 4.5
 MAX_RETRIES_PER_IMAGE = 3
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  PROMPT — NSE Weekly 10/30 EMA Breakout Scanner
+#
+#  Chart source: fetchimages_nse.py plots 2y of weekly OHLCV via yfinance,
+#  with the 10-week EMA in BLUE and the 30-week EMA in ORANGE (see
+#  generate_charts_from_excel()). Prices are in INR. This prompt combines
+#  that NSE-specific chart format with a Weinstein-stage + VCP-contraction
+#  breakout anatomy so the run can flag names that are "basing and
+#  tightening" as well as names breaking out this week:
+#
+#   1. STAGE CONTEXT (Weinstein): is this a Stage 2 advance (what we want),
+#      a Stage 1 base still forming, a Stage 3 top rolling over, or a
+#      Stage 4 decline? EMA alignment alone can look "bullish" late into a
+#      topping process, so stage is checked as its own, prior gate.
+#   2. PRIOR THRUST: an earlier strong up-leg (or a golden-cross reclaim off
+#      a base) that already lifted price well off its lows and put it above
+#      a rising 10 EMA, itself at/crossing above the rising 30 EMA.
+#   3. TIGHT BASE / FLAG with CONTRACTIONS: several weeks of small-range,
+#      sideways-to-up candles hugging the blue 10 EMA, printing a
+#      flat/rising shelf. The highest-quality bases show 2-3 progressively
+#      TIGHTER pullbacks (each contraction shallower than the last — VCP),
+#      not just one flat range. Volume dries up during this base.
+#   4. THE TRIGGER: a wide-range green weekly candle that CLOSES NEAR ITS
+#      HIGH (upper third of the candle's range), breaking/closing above the
+#      shelf resistance, on volume that expands sharply vs. the base. A
+#      breakout candle with a big upper wick / weak close is a same-week
+#      fakeout risk even if it technically pierces resistance.
+#   5. The orange 30 EMA stays below and rising underneath the blue 10
+#      EMA/price the whole time -- both EMAs support the move rather than
+#      cap it.
+#   6. REWARD SIDE: a measured-move target (pivot + base height) gives an
+#      immediate reward/risk gut-check against the stop distance.
+#
+#  This pipeline runs once a day, but the chart is WEEKLY, so the rightmost
+#  candle very often represents the current, still-open trading week -- see
+#  the note in the prompt body telling the model to judge that candle live
+#  rather than penalize it for looking incomplete.
+# ══════════════════════════════════════════════════════════════════════════════
 PROMPT = """
-You are a professional swing trader evaluating an NSE (Indian stock market)
-WEEKLY chart to decide whether it is a candidate to BUY at or near the
-current price, or needs more time to set up. Prices are in Indian Rupees
-(INR). Each candle on this chart represents one week. This is a live,
-forward-looking decision about the right edge of the chart - NOT a
-historical review of a move that has already completed.
+You are a veteran swing trader and market wizard evaluating an NSE (Indian
+stock market) WEEKLY chart to decide whether it is a candidate to BUY at or
+near the current price, or needs more time to set up. Prices are in Indian
+Rupees (INR). Each image is a WEEKLY candlestick chart with two moving
+averages plotted: the BLUE line is the 10-week EMA, the ORANGE line is the
+30-week EMA. You are scanning for stocks that are basing and about to break
+out, or are breaking out right now, on the weekly timeframe -- NOT daily
+noise.
 
 This pipeline runs once a day, but the chart is WEEKLY, so the rightmost
 candle very often represents the current, still-open trading week rather
 than a closed one. Do not penalize a setup just because the rightmost
-candle looks incomplete or short - instead use it to judge whether price
+candle looks incomplete or short -- instead use it to judge whether price
 is CURRENTLY trading at, through, or near the pivot level right now. Your
 job is to catch the setup as it develops through the week, not only after
 the week has closed.
 
-Chart legend: candles are green (up week) / red (down week). The blue line
-is the 10-week EMA. The orange line is the 30-week EMA. There is a volume
-panel below the price panel with no average-volume reference line drawn -
-judge "high" or "low" volume relative to the other bars visible on the
-same chart.
+Chart legend: candles are green (up week) / red (down week). There is a
+volume panel below the price panel with no average-volume reference line
+drawn -- judge "high" or "low" volume relative to the other bars visible
+on the same chart.
 
-Your primary goal is to identify stocks in a strong uptrend with linear
-price action, clear institutional footprints, and a good risk/reward
-profile. Ruthlessly reject choppy or downtrending stocks, deep bases,
-heavy distribution, and post-top rollovers.
+Your job is to recognize this repeatable anatomy of a weekly breakout:
+0. STAGE CONTEXT — before anything else, classify the overall stage of the
+   move (Weinstein-style): is price in a Stage 1 base (flat, coiling, no
+   trend), a Stage 2 advance (trending up, EMAs rising and supportive --
+   this is what we want), a Stage 3 top (advance stalling, EMAs flattening,
+   choppy overlapping candles after a big run), or a Stage 4 decline (EMAs
+   falling, price below both)? Do this classification FIRST, independent of
+   EMA alignment alone -- a stock can look "10>30 rising" while already
+   deep into a Stage 3 top.
+1. PRIOR THRUST — an earlier strong up-leg (or a golden-cross reclaim) that
+   already lifted price above a rising blue 10 EMA, with the blue 10 EMA at
+   or above the rising orange 30 EMA.
+2. TIGHT BASE / FLAG WITH CONTRACTIONS — several weeks of small-range,
+   sideways-to-up candles hugging the blue 10 EMA, forming a flat or gently
+   rising shelf with a clear horizontal resistance level. Count how many
+   distinct pullback legs ("contractions") make up the base. The strongest
+   bases show multiple contractions that get progressively TIGHTER/
+   shallower each time (classic VCP); a single flat range counts as one
+   contraction. Volume should be drying up / below average during this
+   base.
+3. THE TRIGGER — a wide-range green weekly candle, on volume that expands
+   sharply above the base's average volume, pushing through or closing
+   above the shelf resistance. Critically, judge WHERE this candle closes
+   within its own high-low range: a close in the upper third is a strong,
+   convicted trigger; a close in the lower half (long upper wick) is a weak
+   trigger even if the high pierced resistance -- flag it as such rather
+   than treating any green candle above the shelf as confirmation.
+4. EMA SUPPORT — the orange 30 EMA stays below price and rising throughout,
+   acting as support under the blue 10 EMA, never capping the move from
+   above.
+5. REWARD SIDE — once you have a pivot and stop, project a first target
+   using a measured move: target = pivot + (height of the base, i.e.
+   base high minus base low). This gives a quick reward-vs-risk read
+   alongside the stop distance.
 
-Step 0 - VALIDITY GATE: First confirm this image is actually a valid stock
-price chart (candles/bars, a price axis, and time axis). If it is NOT a
-valid stock chart (e.g. a receipt, screenshot of text, unrelated photo, or
-anything you cannot analyze), respond with ONLY this exact line and
-nothing else:
-INVALID | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | Score 0% | Not a valid stock chart
-
-Do not add any explanation before or after that line. Only proceed to the
-steps below if the image IS a valid stock chart.
-
-Step 1: Identify the Stock Symbol/Ticker shown on the chart (it should be
-in the chart title). If it is genuinely not visible anywhere on the chart,
-use "N/A".
-
-Step 2: Confirm the Chart Timeframe is "Weekly" from the candle spacing and
-axis labels. If the chart clearly does NOT look weekly (e.g. it looks like
-daily bars), report "Daily" or "Unclear" here instead so the mismatch is
-visible downstream, but continue the analysis as best you can.
-
-Step 3 - LINEARITY CHECK: Assess the price action leading into the current
-base. Choose strictly either "Linear" or "Choppy".
-
-Step 4 - MOVING AVERAGE (MA) STATUS: Choose one: "Rising (Price > 10 EMA >
-30 EMA)", "Coiling", "Price > 10 EMA but < 30 EMA", or "Downtrending
-(Price < 10 EMA < 30 EMA, or 30 EMA sloping down)".
-
-Step 5: Identify the base/pattern type at the right edge of the chart.
-You MUST choose exactly one label from this fixed list - do not invent
-new names, combine names, or use synonyms for something already on the
-list:
-["VCP", "Flag", "Bull Flag", "Pennant", "Cup with Handle", "Long Base",
-"High Tight Flag", "Flat Base", "Wedge", "Ascending Triangle",
-"Double Bottom", "Rounding Base", "No Clear Base", "Other"]
-
-If you choose "Other", it must be a pattern genuinely not covered by the
-list above - append a short 2-4 word descriptor after it in the Pattern
-field (e.g. "Other: Head and Shoulders"). Do not use "Other" just to
-rename something that already has a label on the list.
-
-Step 6 - BASE DEPTH: Choose one: "Shallow (< 20%)", "Normal (20% - 35%)",
-or "Deep (> 35%)".
-
-Step 7 - DISTRIBUTION / DATA-QUALITY CHECK: Choose one: "Clean" or "Heavy
-Distribution". While judging this, also screen for two things and fold
-any findings into your Step 15 Reason (do not add new output fields):
+Ruthlessly reject: Stage 1 names with no evidence of a prior thrust yet,
+Stage 3/4 names (topping or declining) even if short-term EMA alignment
+still looks bullish, choppy overlapping price action with no identifiable
+base, deep/loose bases (>35% range), climactic/parabolic candles already
+far extended above both EMAs with no nearby support, and heavy top-down
+distribution (long red candles on above-average volume near highs). Also
+screen for two data-quality issues and fold any findings into the Reason:
 - Anomalous candles: a single candle with a range wildly out of proportion
   to the rest of the chart (e.g. price roughly doubling and round-tripping
   within one or two weeks with nothing comparable elsewhere) is likely a
   corporate action (split/bonus/rights issue) or data artifact, not
-  genuine volatility - discount it rather than reading it as a clean
-  breakout signal, and say so in the Reason.
+  genuine volatility -- discount it rather than reading it as a clean
+  breakout signal.
 - Illiquidity: if volume is near-zero for most of the chart and only
   spikes on the most recent week(s), note that the stock is thinly traded
-  even if the pattern otherwise qualifies - this raises slippage risk.
+  even if the pattern otherwise qualifies -- this raises slippage risk.
 
-Step 8 - INSTITUTIONAL FOOTPRINT CHECK: Look at the price advance that led
-INTO this base (the run-up before the current consolidation) and check it
-against these criteria for genuine institutional buying:
-- Roughly 3-8 weeks of concentrated buying on visibly strong, towering
-  volume (clearly above the average volume seen elsewhere on the chart).
-- The overall advance should be a strong move, ideally in the 20%-40%+
-  range - a real show of buying force, not a weak drift higher.
-- Ideally there is at least one standout weekly candle with an unusually
-  wide range relative to the rest of the chart somewhere in that move.
-- Ideally the move includes a stand-out volume bar - a clear spike
-  relative to recent history.
-- The base that follows should be shallow - ideally less than 15-20% deep
-  at worst - and price should be holding above the 10-week EMA, with the
-  30-week EMA flattening out or turning up beneath it.
+Step 0 — VALIDITY GATE: First confirm this image is a valid weekly stock
+chart with visible EMAs. If not, respond ONLY with:
+INVALID | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | Score 0% | Not a valid weekly chart
 
-Rate how many of these are clearly visible on the chart and choose one:
-- "Strong": most/all criteria are clearly present.
-- "Moderate": some criteria present, others unclear or absent.
-- "Weak": few or none of these criteria are visible.
-Use "Unclear" only if the chart doesn't show enough of the prior move to judge.
+Step 1: Identify the Stock Symbol/Ticker (it should be in the chart
+title). Use "N/A" if not visible.
+Step 2 — STAGE: Choose one: "Stage 1 (Basing)", "Stage 2 (Advancing)", "Stage 3 (Topping)", or "Stage 4 (Declining)".
+Step 3 — EMA ALIGNMENT: Choose one: "10>30 Rising (Aligned)", "10 Crossing Above 30", "10<30 (Downtrend)", or "Flat/Coiling".
+Step 4 — BASE STRUCTURE: Identify the pattern (e.g., "Flag", "Shelf/Flat Base", "VCP", "Cup with Handle", "Golden-Cross Reclaim"). If none, use "No Clear Base".
+Step 5 — BASE TIGHTNESS: Choose one: "Tight (< 15%)", "Normal (15% - 30%)", or "Loose (> 30%)".
+Step 6 — CONTRACTIONS: Count of distinct pullback legs in the base (integer, e.g. "1", "2", "3"), noting whether each is tighter than the last, or "N/A" if no base.
+Step 7 — VOLUME SIGNATURE: Choose one: "Drying Up in Base", "Expanding on Breakout", "Climactic/Blow-off", or "Average/No Signal".
+Step 8 — TRIGGER CANDLE QUALITY: Choose one: "Strong Close (Upper Third)", "Mid-Range Close", "Weak Close (Lower Third/Long Wick)", or "N/A" if no trigger candle yet.
+Step 9 — BREAKOUT STATUS: Choose one: "Pre-Breakout (Basing)", "Breaking Out This Week", "Already Extended", or "No Setup / Downtrend".
+Step 10: Weeks spent basing/tightening so far (integer, e.g. "6") or "N/A".
+Step 11: Pivot/Trigger Price — the shelf/base resistance level to buy above. Read it off the nearest price-axis gridline. Give a plain INR number only (e.g. 1420.50), no currency symbol or extra text. Use "N/A" if not applicable.
+Step 12 — STOPLEVEL: Plain INR number just below the 10 EMA or the low of the base (e.g., 1380.00). Use "N/A" if not applicable.
+Step 13 — STOPLOSS PERCENTAGE: Percentage difference between Pivot and Stoplevel (e.g., 6.5%). Use "N/A" if not applicable.
+Step 14 — TARGET1: Measured-move first target = Pivot + base height (high minus low of the base). Plain INR number (e.g., 1650.00) or "N/A".
+Step 15: Score 0-100% for breakout quality/readiness, where 90%+ is a textbook, high-conviction setup worth acting on, and below 40% means avoid or skip for now (e.g., Score 85%).
+Step 16: One-sentence Reason referencing the specific anatomy observed (stage, EMA alignment, base/contractions, trigger candle quality, and any data-quality/liquidity flags).
 
-Step 9: Assess READINESS as of the most recent candle. Choose exactly one:
-- "Ready Now": the base is tight and complete, price is sitting at, just
-  below, or currently pushing through a clear pivot/trigger level this
-  week, volume has dried up through the base (or is now expanding on the
-  breakout week), and the setup is actionable now.
-- "Forming": the setup is developing but not yet tight or complete -
-  more price action or time is needed before it becomes tradeable.
-- "Extended": the stock has already broken out and moved too far from a
-  logical entry to chase.
-- "Broken": the pattern has failed - support violated, structure choppy
-  or erratic, or a prior breakout has already rolled back below the pivot
-  or the 10-week EMA (treat any single up-week inside an established
-  downtrend - 10 EMA below 30 EMA, both sloping down - as a bull trap, not
-  a new setup).
-
-Step 10: If "Forming", estimate how many more weeks it likely needs to
-tighten up before becoming actionable (e.g., "1-2 weeks", "3-4 weeks").
-If not "Forming", use "N/A".
-
-Step 11: If "Ready Now" (or close to it), identify the specific
-Pivot/Trigger Price visible on the chart - the level that, if broken above,
-confirms entry. Read it off the nearest price-axis gridline. Give a plain
-INR number only (e.g. 1420.50), no currency symbol or extra text. Use
-"N/A" if not applicable.
-
-Step 12 - STOPLEVEL: Identify a logical Stop-Loss reference level - the low
-of the last 1-2 candles or the base low, read off the nearest price-axis
-gridline. Give a plain INR number only (e.g. 1380.00). Use "N/A" if not
-applicable.
-
-Step 13 - STOPLOSS PERCENTAGE: Percentage difference between Pivot and
-Stoplevel (e.g., 3.5%). Use "N/A" if not applicable.
-
-Step 14: Convert your conviction into a Score 0-100%, where 90%+ is a
-textbook, high-conviction setup worth acting on, and below 40% means
-avoid or skip for now. A "Weak" institutional footprint, "Choppy"
-linearity, an anomalous/data-quality candle, or a post-top rollover should
-generally pull this score down, even if the base pattern itself looks
-tight.
-
-Step 15: Give a concise one-sentence Reason covering volume behavior,
-the 10/30-week EMA relationship, structural tightness/linearity, and any
-data-quality or liquidity flags from Step 7.
-
-Respond ONLY in this exact pipe "|" separated format with 15 parts, and no extra text:
-[Symbol] | [Timeframe] | [Linearity] | [MA_Status] | [Pattern] | [BaseDepth] | [DistributionCheck] | [Inst_Footprint] | [Readiness] | [DaysToReady] | [PivotPrice] | [StopLevel] | [StoplossPercent] | Score [0-100]% | [Reason]
+Respond ONLY in this exact pipe "|" separated format with 16 parts, and no extra text:
+[Symbol] | [Stage] | [EMA_Alignment] | [BaseStructure] | [BaseTightness] | [Contractions] | [VolumeSignature] | [TriggerCandleQuality] | [BreakoutStatus] | [WeeksBasing] | [PivotPrice] | [StopLevel] | [StoplossPercent] | [Target1] | Score [0-100]% | [Reason]
 """
 
 FIELDNAMES = [
-    "File", "Symbol", "Timeframe", "Linearity", "MA_Status", "Pattern",
-    "BaseDepth", "DistributionCheck", "InstitutionalFootprint", "Readiness",
-    "DaysToReady", "PivotPrice", "StopLevel", "StoplossPercent", "Score",
-    "Reason", "RawResponse"
+    "File", "Symbol", "Stage", "EMA_Alignment", "BaseStructure", "BaseTightness",
+    "Contractions", "VolumeSignature", "TriggerCandleQuality", "BreakoutStatus",
+    "WeeksBasing", "PivotPrice", "StopLevel", "StoplossPercent", "Target1",
+    "Score", "Reason", "RawResponse"
 ]
 
 
 def parse_response(raw_text):
     raw_parts = [p.strip() for p in raw_text.split("|")]
 
-    if len(raw_parts) != 15:
+    if len(raw_parts) != 16:
         return {
-            "Symbol": "N/A", "Timeframe": "N/A", "Linearity": "N/A",
-            "MA_Status": "N/A", "Pattern": "N/A", "BaseDepth": "N/A",
-            "DistributionCheck": "N/A", "InstitutionalFootprint": "N/A",
-            "Readiness": "PARSE_ERROR", "DaysToReady": "N/A", "PivotPrice": "N/A",
-            "StopLevel": "N/A", "StoplossPercent": "N/A", "Score": "N/A",
-            "Reason": f"Field count mismatch ({len(raw_parts)}/15). Raw: {raw_text}",
+            "Symbol": "N/A", "Stage": "N/A", "EMA_Alignment": "N/A", "BaseStructure": "N/A",
+            "BaseTightness": "N/A", "Contractions": "N/A", "VolumeSignature": "N/A",
+            "TriggerCandleQuality": "N/A", "BreakoutStatus": "PARSE_ERROR", "WeeksBasing": "N/A",
+            "PivotPrice": "N/A", "StopLevel": "N/A", "StoplossPercent": "N/A", "Target1": "N/A",
+            "Score": "N/A",
+            "Reason": f"Field count mismatch ({len(raw_parts)}/16). Raw: {raw_text}",
             "RawResponse": raw_text,
         }
 
-    (symbol, timeframe, linearity, ma_status, pattern, base_depth, dist_check,
-     footprint, readiness, days_to_ready, pivot, stop_level, stop_percent, score_field, reason) = raw_parts
+    (symbol, stage, ema_alignment, base_structure, base_tightness, contractions,
+     vol_signature, trigger_quality, breakout_status, weeks_basing, pivot,
+     stop_level, stop_percent, target1, score_field, reason) = raw_parts
 
     score = score_field.replace("Score", "").strip()
 
     return {
         "Symbol": symbol,
-        "Timeframe": timeframe,
-        "Linearity": linearity,
-        "MA_Status": ma_status,
-        "Pattern": pattern,
-        "BaseDepth": base_depth,
-        "DistributionCheck": dist_check,
-        "InstitutionalFootprint": footprint,
-        "Readiness": readiness,
-        "DaysToReady": days_to_ready,
+        "Stage": stage,
+        "EMA_Alignment": ema_alignment,
+        "BaseStructure": base_structure,
+        "BaseTightness": base_tightness,
+        "Contractions": contractions,
+        "VolumeSignature": vol_signature,
+        "TriggerCandleQuality": trigger_quality,
+        "BreakoutStatus": breakout_status,
+        "WeeksBasing": weeks_basing,
         "PivotPrice": pivot,
         "StopLevel": stop_level,
         "StoplossPercent": stop_percent,
+        "Target1": target1,
         "Score": score,
         "Reason": reason,
         "RawResponse": raw_text,
@@ -352,8 +336,8 @@ def run_vision_analysis(folder_path="Tomorrow_Setups_NSE", csv_filename=None):
                     n = progress["done"]
 
                 print(f"[{n}/{total}] (key {worker.label}) {filename}: "
-                      f"{row['Symbol']} | Linearity: {row['Linearity']} | "
-                      f"Stop: {row['StopLevel']} | Score: {row['Score']}")
+                      f"{row['Symbol']} | {row['Stage']} | {row['BreakoutStatus']} | "
+                      f"Base: {row['BaseStructure']} | Score: {row['Score']}")
 
             except Exception as e:
                 with progress_lock:

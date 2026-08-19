@@ -23,13 +23,21 @@ def send_email_report(csv_file_path):
         return
 
     msg = EmailMessage()
-    msg['Subject'] = f"🚀 Daily NSE A-Grade Swing Setups: {datetime.date.today()}"
+    msg['Subject'] = f"🚀 NSE Weekly 10/30 EMA Breakout Scan: {datetime.date.today()}"
     msg['From'] = sender_email
     msg['To'] = receiver_email
     msg.set_content(
-        "Your automated NSE pipeline has finished running.\n\n"
-        "Attached are your top-graded setups for tomorrow's session. "
-        "Open the CSV and sort by 'Score' to see the A-Grades first.\n\n"
+        "Your automated NSE Weekly 10/30 EMA Breakout pipeline has finished running.\n\n"
+        "Attached is the full CSV of every weekly chart scanned. Open it and sort by "
+        "'Score' (highest first) to see the best setups.\n\n"
+        "Quick guide to the key columns:\n"
+        "  - Stage: Weinstein Stage 1 (Basing) / 2 (Advancing) / 3 (Topping) / 4 (Declining)\n"
+        "  - BreakoutStatus: Pre-Breakout (Basing) / Breaking Out This Week / Already Extended / No Setup\n"
+        "  - BaseStructure / BaseTightness / Contractions: shape and quality of the base (VCP-style contractions are the highest quality)\n"
+        "  - TriggerCandleQuality: how convincingly this week's candle closed through the pivot\n"
+        "  - PivotPrice / StopLevel / StoplossPercent / Target1: entry trigger, stop, risk %, and first measured-move target (all in INR)\n\n"
+        "Focus first on Stage 2 names that are 'Breaking Out This Week' or tightly basing "
+        "and 'Pre-Breakout', with a Strong Close trigger candle.\n\n"
         "Happy Trading!"
     )
 
